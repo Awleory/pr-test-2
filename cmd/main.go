@@ -9,6 +9,7 @@ import (
 )
 
 func main() {
+
 	arguments := os.Args
 
 	if len(arguments) < 2 {

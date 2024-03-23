@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lib/pq"
+	_ "github.com/lib/pq"
 )
 
-type orderPrintForm struct {
+type orderRow struct {
 	shelfTitle   string
 	shelfId      int
 	orderId      int
@@ -23,7 +23,13 @@ type subShelf struct {
 	title string
 }
 
-func (pf orderPrintForm) PrintForm() string {
+type ordersTable struct {
+}
+
+type intIndex struct {
+}
+
+func (pf orderRow) PrintForm() string {
 	result := fmt.Sprintf("%s (id=%d)\n", pf.productTitle, pf.productId)
 	result += fmt.Sprintf("заказ %d, %d шт\n", pf.orderId, pf.productCount)
 	if len(*pf.subShelfs) > 0 {
@@ -54,90 +60,217 @@ func (db *DB) Close() error {
 	return db.sqlDB.Close()
 }
 
-func (db *DB) ordersPrintStruct(orders []int) (map[int][]orderPrintForm, error) {
+func (db *DB) selectOrdersStructByShelf(orders []int) (map[int][]orderRow, error) {
+	if len(orders) == 0 {
+		return nil, fmt.Errorf("orders is empty")
+	}
 
-	query :=
-		`SELECT 
-	order_num as orderId,
-	product_orders.product_id as productId,
-	product.title as productTitle,
-	shelf.id as shelfId,
-	shelf.title as shelfTitle,
-	is_main_shelf as isMainShelf,
-	count as productCount
-	FROM product_orders
-	LEFT JOIN product 
-	ON product.id=product_orders.product_id
-	LEFT JOIN product_shelf 
-	ON product_shelf.product_id = product_orders.product_id
-	LEFT JOIN shelf 
-	ON shelf.id = shelf_id
-	Where order_num = ANY($1)
-	Order by is_main_shelf desc`
+	addIndex := func(mp *map[int][]orderRow, key int, printForm *orderRow) {
+		if _, ok := (*mp)[key]; !ok {
+			printForms := make([]orderRow, 0)
+			(*mp)[key] = printForms
+		}
+		(*mp)[key] = append((*mp)[key], *printForm)
+	}
 
-	rows, err := db.sqlDB.Query(query, pq.Array(orders))
-	if err != nil {
+	productIdIndex := make(map[int][]orderRow)
+	query := `SELECT
+	product_id,
+	order_num,
+	count
+	FROM product_orders`
+	if rows, err := db.sqlDB.Query(query); err == nil {
+		defer rows.Close()
+
+		ordersMap := make(map[int]int)
+		for _, v := range orders {
+			ordersMap[v] = 0
+		}
+		for rows.Next() {
+			printForm := orderRow{}
+			if err := rows.Scan(
+				&printForm.productId,
+				&printForm.orderId,
+				&printForm.productCount,
+			); err != nil {
+				return nil, err
+			}
+
+			if _, ok := ordersMap[printForm.orderId]; !ok {
+				continue
+			}
+
+			sub := make([]subShelf, 0)
+			printForm.subShelfs = &sub
+
+			addIndex(&productIdIndex, printForm.productId, &printForm)
+		}
+	} else {
 		return nil, err
 	}
-	defer rows.Close()
 
-	shelfIdPrintForm := make(map[int][]orderPrintForm)
-	productIdPrintForm := make(map[int][]orderPrintForm)
-	for rows.Next() {
-		printForm := orderPrintForm{}
-		isMainShelf := false
-		if err := rows.Scan(
-			&printForm.orderId,
-			&printForm.productId,
-			&printForm.productTitle,
-			&printForm.shelfId,
-			&printForm.shelfTitle,
-			&isMainShelf,
-			&printForm.productCount,
-		); err != nil {
-			return nil, err
-		}
+	shelfIdIndex := make(map[int][]orderRow)
+	subShelfsIndex := make(map[int][]orderRow)
+	mainShelfsIndex := make(map[int][]orderRow)
+	query = `SELECT
+	product_id,
+	shelf_id,
+	is_main_shelf
+	FROM product_shelf`
+	if rows, err := db.sqlDB.Query(query); err == nil {
+		defer rows.Close()
 
-		sub := make([]subShelf, 0)
-		printForm.subShelfs = &sub
+		var productId int
+		var shelfId int
+		var isMainShelf bool
+		mapCount := len(productIdIndex)
+		for rows.Next() {
+			if mapCount == 0 {
+				break
+			}
+			if err := rows.Scan(
+				&productId,
+				&shelfId,
+				&isMainShelf,
+			); err != nil {
+				return nil, err
+			}
 
-		if !isMainShelf {
+			if _, ok := productIdIndex[productId]; ok {
+				for i := 0; i < len(productIdIndex[productId]); i++ {
+					productIdIndex[productId][i].shelfId = shelfId
+					addIndex(&shelfIdIndex, shelfId, &(productIdIndex[productId][i]))
 
-			if array, ok := productIdPrintForm[printForm.productId]; ok {
-				for i := 0; i < len(array); i++ {
-					*productIdPrintForm[printForm.productId][i].subShelfs =
-						append(*productIdPrintForm[printForm.productId][i].subShelfs, subShelf{printForm.shelfId, printForm.shelfTitle})
+					if isMainShelf {
+						addIndex(&subShelfsIndex, shelfId, &(productIdIndex[productId][i]))
+					} else {
+						addIndex(&mainShelfsIndex, shelfId, &(productIdIndex[productId][i]))
+					}
+				}
+			} else {
+				printForm := orderRow{
+					productId: productId,
+					shelfId:   shelfId,
+				}
+
+				addIndex(&shelfIdIndex, shelfId, &printForm)
+				addIndex(&productIdIndex, productId, &printForm)
+				if isMainShelf {
+					addIndex(&subShelfsIndex, shelfId, &printForm)
+				} else {
+					addIndex(&mainShelfsIndex, shelfId, &printForm)
 				}
 			}
-			continue
-		}
 
-		if _, ok := shelfIdPrintForm[printForm.shelfId]; !ok {
-			printForms := make([]orderPrintForm, 0)
-			shelfIdPrintForm[printForm.shelfId] = printForms
+			mapCount--
 		}
-
-		if _, ok := productIdPrintForm[printForm.productId]; !ok {
-			printForms := make([]orderPrintForm, 0)
-			productIdPrintForm[printForm.productId] = printForms
-		}
-
-		shelfIdPrintForm[printForm.shelfId] = append(shelfIdPrintForm[printForm.shelfId], printForm)
-		productIdPrintForm[printForm.productId] = append(productIdPrintForm[printForm.productId], printForm)
 	}
 
-	return shelfIdPrintForm, nil
+	fmt.Println("222222")
+	fmt.Println(printFormByIndex(productIdIndex))
+
+	query = `SELECT
+	id,
+	title
+	FROM product`
+	if rows, err := db.sqlDB.Query(query); err == nil {
+		defer rows.Close()
+
+		var id int
+		var title string
+		mapCount := len(productIdIndex)
+		for rows.Next() {
+			if mapCount == 0 {
+				break
+			}
+			if err := rows.Scan(
+				&id,
+				&title,
+			); err != nil {
+				return nil, err
+			}
+
+			if _, ok := productIdIndex[id]; ok {
+				for i := 0; i < len(productIdIndex[id]); i++ {
+					productIdIndex[id][i].productTitle = title
+				}
+			}
+
+			mapCount--
+		}
+	} else {
+		return nil, err
+	}
+
+	query = `SELECT
+	id,
+	title
+	FROM shelf`
+	if rows, err := db.sqlDB.Query(query); err == nil {
+		defer rows.Close()
+
+		var id int
+		var title string
+		mapCount := len(shelfIdIndex)
+		for rows.Next() {
+			if mapCount == 0 {
+				break
+			}
+			if err := rows.Scan(
+				&id,
+				&title,
+			); err != nil {
+				return nil, err
+			}
+
+			if _, ok := shelfIdIndex[id]; ok {
+				for i := 0; i < len(shelfIdIndex[id]); i++ {
+					shelfIdIndex[id][i].shelfTitle = title
+				}
+			}
+
+			mapCount--
+		}
+	} else {
+		return nil, err
+	}
+
+	fmt.Println(len(subShelfsIndex))
+	for index := range subShelfsIndex {
+		for _, v := range subShelfsIndex[index] {
+			if _, ok := mainShelfsIndex[v.productId]; ok {
+				for i := 0; i < len(mainShelfsIndex[v.productId]); i++ {
+					*mainShelfsIndex[v.productId][i].subShelfs =
+						append(*mainShelfsIndex[v.productId][i].subShelfs,
+							subShelf{v.shelfId, v.shelfTitle})
+				}
+			}
+		}
+	}
+
+	return shelfIdIndex, nil
 }
 
 func (db *DB) OrdersPrintForm(orders []int) (string, error) {
-	printForms, err := db.ordersPrintStruct(orders)
+	printForms, err := db.selectOrdersStructByShelf(orders)
 	if err != nil {
 		return "", err
 	}
 
 	result := "=+=+=+=\n"
 	result += fmt.Sprintf("Страница сборки заказов %v\n\n", orders)
+	if str, err := printFormByIndex(printForms); err != nil {
+		return "", err
+	} else {
+		result += str
+	}
 
+	return result, nil
+}
+
+func printFormByIndex(printForms map[int][]orderRow) (string, error) {
+
+	result := ""
 	for _, pfs := range printForms {
 		if len(pfs) > 0 {
 			result += fmt.Sprintf("===Стеллаж %s\n", pfs[0].shelfTitle)
