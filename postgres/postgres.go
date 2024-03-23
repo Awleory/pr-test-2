@@ -8,41 +8,6 @@ import (
 	_ "github.com/lib/pq"
 )
 
-type orderRow struct {
-	shelfTitle   string
-	shelfId      int
-	orderId      int
-	productTitle string
-	productId    int
-	productCount int
-	subShelfs    *[]subShelf
-}
-
-type subShelf struct {
-	id    int
-	title string
-}
-
-type ordersTable struct {
-}
-
-type intIndex struct {
-}
-
-func (pf orderRow) PrintForm() string {
-	result := fmt.Sprintf("%s (id=%d)\n", pf.productTitle, pf.productId)
-	result += fmt.Sprintf("заказ %d, %d шт\n", pf.orderId, pf.productCount)
-	if len(*pf.subShelfs) > 0 {
-		var subShelfsStr []string
-		for _, v := range *pf.subShelfs {
-			subShelfsStr = append(subShelfsStr, v.title)
-		}
-		result += fmt.Sprintf("доп стеллаж: %v\n", strings.Join(subShelfsStr, ","))
-	}
-	result += "\n"
-	return result
-}
-
 type DB struct {
 	sqlDB *sql.DB
 }
@@ -60,17 +25,83 @@ func (db *DB) Close() error {
 	return db.sqlDB.Close()
 }
 
+type orderRow struct {
+	orderId       int
+	shelfId       int
+	shelfTitle    string
+	productId     int
+	productTitle  string
+	productCount  int
+	subShelfTable subShelfTable
+}
+
+func NewOrderRow() orderRow {
+	return orderRow{
+		subShelfTable: NewSubShelfTable(),
+	}
+}
+
+type subShelf struct {
+	productId int
+	shelfId   int
+	title     string
+}
+
+type subShelfTable struct {
+	rows *[]subShelf
+}
+
+func (table subShelfTable) Len() int {
+	return len(*table.rows)
+}
+
+func NewSubShelfTable() subShelfTable {
+	rows := make([]subShelf, 0)
+	return subShelfTable{&rows}
+}
+
+type ordersTable struct {
+	rows *[]orderRow
+}
+
+func NewOrdersTable() ordersTable {
+	table := ordersTable{}
+	rows := make([]orderRow, 0)
+	table.rows = &rows
+	return table
+}
+
+func (table ordersTable) AddRow() *orderRow {
+	newRow := NewOrderRow()
+	*table.rows = append(*table.rows, newRow)
+	return &newRow
+}
+
+func (row orderRow) PrintForm() string {
+	result := fmt.Sprintf("%s (id=%d)\n", row.productTitle, row.productId)
+	result += fmt.Sprintf("заказ %d, %d шт\n", row.orderId, row.productCount)
+	if row.subShelfTable.Len() > 0 {
+		var subShelfsStr []string
+		for _, v := range *row.subShelfTable.rows {
+			subShelfsStr = append(subShelfsStr, v.title)
+		}
+		result += fmt.Sprintf("доп стеллаж: %v\n", strings.Join(subShelfsStr, ","))
+	}
+	result += "\n"
+	return result
+}
+
 func (db *DB) selectOrdersStructByShelf(orders []int) (map[int][]orderRow, error) {
 	if len(orders) == 0 {
 		return nil, fmt.Errorf("orders is empty")
 	}
 
-	addIndex := func(mp *map[int][]orderRow, key int, printForm *orderRow) {
+	addIndex := func(mp *map[int][]orderRow, key int, orderRow *orderRow) {
 		if _, ok := (*mp)[key]; !ok {
-			printForms := make([]orderRow, 0)
-			(*mp)[key] = printForms
+			orderRows := make([]orderRow, 0)
+			(*mp)[key] = orderRow
 		}
-		(*mp)[key] = append((*mp)[key], *printForm)
+		(*mp)[key] = append((*mp)[key], *orderRow)
 	}
 
 	productIdIndex := make(map[int][]orderRow)
