@@ -5,35 +5,48 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"test/postgres"
+	"test/internal/printer"
+	"test/internal/storage/postgres"
 )
 
 func main() {
-
 	arguments := os.Args
 
 	if len(arguments) < 2 {
 		log.Fatal("enter order number")
 	}
 
-	var orders []int
+	var argsInt []int
+
 	for _, v := range arguments[1:] {
 		num, err := strconv.Atoi(v)
 		if err != nil {
 			log.Println("unable to convert to int")
 		}
-		orders = append(orders, num)
+		argsInt = append(argsInt, num)
 	}
 
 	db, err := postgres.NewConn()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("unnable to connect to db")
 	}
-	defer db.Close()
+	fmt.Println("=+=+=+=")
+	fmt.Printf("Страница сборки заказов %v\n\n", argsInt)
 
-	if result, err := db.OrdersPrintForm(orders); err != nil {
-		log.Fatal(err)
-	} else {
-		fmt.Println(result)
+	orderData, err := db.GetOrder()
+	if err != nil {
+		log.Fatal("unnable to get order data")
 	}
+
+	shelfData, err := db.GetShelf()
+	if err != nil {
+		log.Fatal("unnable to get shelf data")
+	}
+
+	connData, err := db.GetConn()
+	if err != nil {
+		log.Fatal("unnable to get conn data")
+	}
+
+	printer.Printer(shelfData, connData, orderData, argsInt)
 }
